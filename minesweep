@@ -1,0 +1,518 @@
+import pygame
+import random
+import itertools
+from collections import defaultdict, Counter
+import time
+
+class MinesweeperGame:
+    def __init__(self, width, height, num_mines):
+        if num_mines >= width * height:
+            raise ValueError("Number of mines cannot be greater than or equal to total cells.")
+        self.width = width
+        self.height = height
+        self.num_mines = num_mines
+        self.board_internal_state = [[' ' for _ in range(width)] for _ in range(height)]
+        self.mine_locations = set()
+        self.revealed = [[False for _ in range(width)] for _ in range(height)]
+        self.flagged = [[False for _ in range(width)] for _ in range(height)]
+        self.game_over = False
+        self.win = False
+        self.first_move = True
+        self.solution_board = []
+
+        self._place_mines()
+        self._calculate_numbers()
+
+    def _place_mines(self):
+        possible_locations = []
+        for r in range(self.height):
+            for c in range(self.width):
+                possible_locations.append((r, c))
+        
+        self.mine_locations = set(random.sample(possible_locations, self.num_mines))
+
+    def _calculate_numbers(self):
+        self.solution_board = [[0 for _ in range(self.width)] for _ in range(self.height)]
+        for r in range(self.height):
+            for c in range(self.width):
+                if (r, c) in self.mine_locations:
+                    self.solution_board[r][c] = 'M'
+                    continue
+                
+                mine_count = 0
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < self.height and 0 <= nc < self.width and (nr, nc) in self.mine_locations:
+                            mine_count += 1
+                self.solution_board[r][c] = mine_count
+                
+    def get_neighbors(self, r, c):
+        neighbors = []
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < self.height and 0 <= nc < self.width:
+                    neighbors.append((nr, nc))
+        return neighbors
+
+    def reveal(self, r, c):
+        if self.game_over or self.revealed[r][c] or self.flagged[r][c]:
+            return False 
+
+        if self.first_move:
+            if (r,c) in self.mine_locations:
+                self.mine_locations.remove((r,c))
+                new_spot_found = False
+                for nr_new in range(self.height):
+                    for nc_new in range(self.width):
+                        if (nr_new, nc_new) != (r,c) and (nr_new, nc_new) not in self.mine_locations:
+                            self.mine_locations.add((nr_new, nc_new))
+                            new_spot_found = True
+                            break
+                    if new_spot_found:
+                        break
+                self._calculate_numbers() 
+            self.first_move = False
+
+        self.revealed[r][c] = True
+        
+        if (r, c) in self.mine_locations:
+            self.game_over = True
+            self.win = False
+            for mr, mc in self.mine_locations:
+                self.board_internal_state[mr][mc] = 'M'
+            return True 
+
+        cell_value = self.solution_board[r][c]
+        self.board_internal_state[r][c] = str(cell_value)
+
+        if cell_value == 0:
+            for nr, nc in self.get_neighbors(r, c):
+                if not self.revealed[nr][nc] and not self.flagged[nr][nc]:
+                    self.reveal(nr, nc) 
+        
+        self._check_win_condition()
+        return False
+
+    def flag(self, r, c):
+        if self.game_over or self.revealed[r][c]:
+            return
+
+        self.flagged[r][c] = not self.flagged[r][c]
+        if self.flagged[r][c]:
+            self.board_internal_state[r][c] = 'F'
+        else:
+            self.board_internal_state[r][c] = ' ' 
+        
+        self._check_win_condition()
+
+    def _check_win_condition(self):
+        if self.game_over:
+            return
+
+        revealed_count = 0
+        for r_idx in range(self.height):
+            for c_idx in range(self.width):
+                if self.revealed[r_idx][c_idx] and (r_idx, c_idx) not in self.mine_locations:
+                    revealed_count += 1
+        
+        if revealed_count == (self.width * self.height - self.num_mines):
+            self.game_over = True
+            self.win = True
+            for mr, mc in self.mine_locations:
+                if not self.flagged[mr][mc]:
+                    self.flagged[mr][mc] = True
+                    self.board_internal_state[mr][mc] = 'F'
+
+class MinesweeperAI:
+    def __init__(self, game):
+        self.game = game
+        self.rows = game.height
+        self.cols = game.width
+
+    def _get_current_board_view(self):
+        view = [['U' for _ in range(self.cols)] for _ in range(self.rows)]
+        for r in range(self.rows):
+            for c in range(self.cols):
+                if self.game.flagged[r][c]:
+                    view[r][c] = 'F'
+                elif self.game.revealed[r][c]:
+                    if (r,c) in self.game.mine_locations:
+                         view[r][c] = 'M' 
+                    else:
+                        view[r][c] = self.game.solution_board[r][c]
+                else:
+                    view[r][c] = 'U'
+        return view
+
+    def _get_neighbors_states(self, r, c, board_view):
+        unknown_neighbors = []
+        flagged_neighbors = []
+        revealed_safe_neighbors = []
+
+        for nr, nc in self.game.get_neighbors(r, c):
+            if board_view[nr][nc] == 'U':
+                unknown_neighbors.append((nr, nc))
+            elif board_view[nr][nc] == 'F':
+                flagged_neighbors.append((nr, nc))
+            elif isinstance(board_view[nr][nc], int):
+                revealed_safe_neighbors.append((nr,nc))
+        return unknown_neighbors, flagged_neighbors, revealed_safe_neighbors
+
+    def _apply_basic_rules(self, board_view):
+        moves = []
+        made_change_in_iteration = True
+        temp_board_view = [row[:] for row in board_view]
+
+        while made_change_in_iteration:
+            made_change_in_iteration = False
+            for r in range(self.rows):
+                for c in range(self.cols):
+                    cell_val = temp_board_view[r][c]
+                    if isinstance(cell_val, int) and cell_val >= 0:
+                        unknown_n, flagged_n, _ = self._get_neighbors_states(r, c, temp_board_view)
+                        num_flagged = len(flagged_n)
+                        num_unknown = len(unknown_n)
+
+                        if cell_val == num_flagged and num_unknown > 0:
+                            for ur, uc in unknown_n:
+                                if temp_board_view[ur][uc] == 'U':
+                                    if ('reveal', ur, uc) not in moves:
+                                        moves.append(('reveal', ur, uc))
+                                    temp_board_view[ur][uc] = 'S'
+                                    made_change_in_iteration = True
+                            if made_change_in_iteration: continue 
+
+                        if cell_val == (num_flagged + num_unknown) and num_unknown > 0:
+                            for ur, uc in unknown_n:
+                                if temp_board_view[ur][uc] == 'U':
+                                    if ('flag', ur, uc) not in moves:
+                                        moves.append(('flag', ur, uc))
+                                    temp_board_view[ur][uc] = 'F'
+                                    made_change_in_iteration = True
+                            if made_change_in_iteration: continue
+        
+        unique_moves = []
+        seen_moves = set()
+        for move_type, mr, mc in moves:
+            if (move_type, mr, mc) not in seen_moves:
+                unique_moves.append((move_type, mr, mc))
+                seen_moves.add((move_type, mr, mc))
+        return unique_moves
+
+    def _find_frontier_and_constraints(self, board_view):
+        frontier_cells = set()
+        constraints = [] 
+        processed_constraint_cells = set()
+
+        for r in range(self.rows):
+            for c in range(self.cols):
+                cell_val = board_view[r][c]
+                if isinstance(cell_val, int):
+                    unknown_n, flagged_n, _ = self._get_neighbors_states(r, c, board_view)
+                    if unknown_n:
+                        for ur, uc in unknown_n:
+                            frontier_cells.add((ur, uc))
+                        effective_mines_needed = cell_val - len(flagged_n)
+                        if effective_mines_needed >= 0 and (r,c) not in processed_constraint_cells:
+                            relevant_unknown_neighbors = frozenset(u_n for u_n in unknown_n)
+                            constraints.append(((r, c), effective_mines_needed, relevant_unknown_neighbors))
+                            processed_constraint_cells.add((r,c))
+        return sorted(list(frontier_cells)), constraints
+
+    def _is_configuration_valid(self, current_assignment, frontier_list, constraints):
+        for (cr, cc), mines_needed, relevant_neighbors in constraints:
+            assigned_mines_for_this_constraint = 0
+            unknowns_still_for_this_constraint = 0
+            for neighbor_r, neighbor_c in relevant_neighbors:
+                if (neighbor_r, neighbor_c) in current_assignment:
+                    if current_assignment[(neighbor_r, neighbor_c)] == 1:
+                        assigned_mines_for_this_constraint += 1
+                else: 
+                    unknowns_still_for_this_constraint +=1
+            if assigned_mines_for_this_constraint > mines_needed:
+                return False
+            if assigned_mines_for_this_constraint + unknowns_still_for_this_constraint < mines_needed:
+                return False
+        return True
+
+    def _solve_constraints_recursive(self, frontier_idx, current_assignment, frontier_list, constraints, valid_solutions_details):
+        if frontier_idx == len(frontier_list):
+            is_fully_valid = True
+            for (cr, cc), mines_needed, relevant_neighbors in constraints:
+                count = 0
+                for nr, nc in relevant_neighbors:
+                    if current_assignment.get((nr,nc)) == 1:
+                        count +=1
+                if count != mines_needed:
+                    is_fully_valid = False
+                    break
+            if is_fully_valid:
+                valid_solutions_details.append(dict(current_assignment))
+            return
+
+        cell_r, cell_c = frontier_list[frontier_idx]
+        current_assignment[(cell_r, cell_c)] = 0 
+        if self._is_configuration_valid(current_assignment, frontier_list, constraints):
+            self._solve_constraints_recursive(frontier_idx + 1, current_assignment, frontier_list, constraints, valid_solutions_details)
+        
+        current_assignment[(cell_r, cell_c)] = 1 
+        if self._is_configuration_valid(current_assignment, frontier_list, constraints):
+            self._solve_constraints_recursive(frontier_idx + 1, current_assignment, frontier_list, constraints, valid_solutions_details)
+        
+        if (cell_r, cell_c) in current_assignment:
+            del current_assignment[(cell_r, cell_c)]
+
+    def _calculate_probabilities(self, frontier_cells, valid_solutions):
+        if not valid_solutions:
+            if frontier_cells:
+                return {cell: 1.0 / len(frontier_cells) if len(frontier_cells) > 0 else 0.5 for cell in frontier_cells}
+            return {}
+
+        mine_counts = Counter()
+        for sol in valid_solutions:
+            for cell_coord, is_mine in sol.items():
+                if is_mine == 1:
+                    mine_counts[cell_coord] += 1
+        
+        probabilities = {}
+        num_total_solutions = len(valid_solutions)
+        for cell in frontier_cells:
+            probabilities[cell] = mine_counts[cell] / num_total_solutions if num_total_solutions > 0 else 0
+            
+        return probabilities
+
+    def choose_move(self):
+        board_view = self._get_current_board_view()
+        basic_moves = self._apply_basic_rules(board_view)
+        
+        if basic_moves:
+            for move_type, r, c in basic_moves:
+                if move_type == 'reveal' and not self.game.revealed[r][c] and not self.game.flagged[r][c]:
+                    return ('reveal', r, c)
+            for move_type, r, c in basic_moves:
+                 if move_type == 'flag' and not self.game.revealed[r][c] and not self.game.flagged[r][c]:
+                    return ('flag', r, c)
+
+        frontier_cells, constraints = self._find_frontier_and_constraints(board_view)
+
+        if not frontier_cells:
+            unknown_unflagged_cells = []
+            for r in range(self.rows):
+                for c in range(self.cols):
+                    if board_view[r][c] == 'U' and not self.game.flagged[r][c]:
+                        unknown_unflagged_cells.append((r,c))
+            if unknown_unflagged_cells:
+                return ('reveal', *random.choice(unknown_unflagged_cells))
+            else:
+                return None 
+
+        if len(frontier_cells) > 22 : 
+            if frontier_cells:
+                 return ('reveal', *random.choice(frontier_cells))
+            unknown_unflagged_cells = []
+            for r_idx in range(self.rows):
+                for c_idx in range(self.cols):
+                    if board_view[r_idx][c_idx] == 'U' and not self.game.flagged[r_idx][c_idx]:
+                        unknown_unflagged_cells.append((r_idx,c_idx))
+            if unknown_unflagged_cells:
+                return ('reveal', *random.choice(unknown_unflagged_cells))
+            return None
+
+        valid_solutions_details = []
+        self._solve_constraints_recursive(0, {}, frontier_cells, constraints, valid_solutions_details)
+        
+        if not valid_solutions_details:
+            if frontier_cells:
+                 return ('reveal', *random.choice(frontier_cells))
+            else:
+                unknown_unflagged_cells = []
+                for r_idx in range(self.rows):
+                    for c_idx in range(self.cols):
+                        if board_view[r_idx][c_idx] == 'U' and not self.game.flagged[r_idx][c_idx]:
+                            unknown_unflagged_cells.append((r_idx,c_idx))
+                if unknown_unflagged_cells:
+                    return ('reveal', *random.choice(unknown_unflagged_cells))
+                return None
+
+        probabilities = self._calculate_probabilities(frontier_cells, valid_solutions_details)
+
+        for cell, prob in probabilities.items():
+            r, c = cell
+            if prob == 0.0 and not self.game.revealed[r][c] and not self.game.flagged[r][c]:
+                return ('reveal', r, c)
+        
+        for cell, prob in probabilities.items():
+            r, c = cell
+            if prob == 1.0 and not self.game.revealed[r][c] and not self.game.flagged[r][c]:
+                return ('flag', r, c)
+
+        min_prob = 1.1
+        safest_reveal_candidate = None
+        
+        sorted_prob_items = sorted(
+            probabilities.items(), 
+            key=lambda item: (item[1], frontier_cells.index(item[0]) if item[0] in frontier_cells else float('inf'))
+        )
+
+        for cell, prob in sorted_prob_items:
+            r,c = cell
+            if not self.game.revealed[r][c] and not self.game.flagged[r][c]:
+                if prob < min_prob:
+                    min_prob = prob
+                    safest_reveal_candidate = ('reveal', r, c)
+        
+        if safest_reveal_candidate:
+            return safest_reveal_candidate
+
+        unknown_unflagged_cells = []
+        for r_idx in range(self.rows):
+            for c_idx in range(self.cols):
+                if board_view[r_idx][c_idx] == 'U' and not self.game.flagged[r_idx][c_idx]:
+                    unknown_unflagged_cells.append((r_idx,c_idx))
+        if unknown_unflagged_cells:
+            return ('reveal', *random.choice(unknown_unflagged_cells))
+
+        return None
+
+pygame.init()
+
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+LIGHT_GREY = (211, 211, 211)
+DARK_GREY = (169, 169, 169)
+RED = (255, 0, 0)
+BLUE = (0, 0, 255)
+GREEN = (0, 128, 0)
+NUMBER_COLORS = {
+    1: (0, 0, 255),
+    2: (0, 128, 0),
+    3: (255, 0, 0),
+    4: (0, 0, 128),
+    5: (128, 0, 0),
+    6: (0, 128, 128),
+    7: (0, 0, 0),
+    8: (128, 128, 128)
+}
+
+CELL_SIZE = 30
+MARGIN = 5
+INFO_PANEL_HEIGHT = 50
+
+def draw_board(screen, game_instance, font, game_font_bigger):
+    screen.fill(BLACK)
+    pygame.draw.rect(screen, DARK_GREY, [0, 0, screen.get_width(), INFO_PANEL_HEIGHT])
+    
+    mines_left = game_instance.num_mines - sum(row.count('F') for row in game_instance.board_internal_state)
+    status_text_str = f"Kalan Mayın: {mines_left}"
+    if game_instance.game_over:
+        status_text_str = "Oyun Bitti! " + ("Kazandın!" if game_instance.win else "Kaybettin!")
+    
+    status_surface = font.render(status_text_str, True, WHITE)
+    screen.blit(status_surface, (10, 10))
+
+    for row in range(game_instance.height):
+        for col in range(game_instance.width):
+            cell_rect = pygame.Rect(
+                (MARGIN + CELL_SIZE) * col + MARGIN,
+                (MARGIN + CELL_SIZE) * row + MARGIN + INFO_PANEL_HEIGHT,
+                CELL_SIZE,
+                CELL_SIZE
+            )
+            cell_state = game_instance.board_internal_state[row][col]
+            
+            if game_instance.revealed[row][col]:
+                pygame.draw.rect(screen, LIGHT_GREY, cell_rect)
+                if cell_state.isdigit() and int(cell_state) > 0:
+                    num = int(cell_state)
+                    text_surface = font.render(str(num), True, NUMBER_COLORS.get(num, BLACK))
+                    text_rect = text_surface.get_rect(center=cell_rect.center)
+                    screen.blit(text_surface, text_rect)
+                elif cell_state == 'M':
+                    pygame.draw.rect(screen, RED, cell_rect)
+                    mine_text = game_font_bigger.render("X", True, BLACK)
+                    text_rect = mine_text.get_rect(center=cell_rect.center)
+                    screen.blit(mine_text, text_rect)
+            elif game_instance.flagged[row][col]:
+                pygame.draw.rect(screen, DARK_GREY, cell_rect)
+                flag_text = font.render("F", True, RED)
+                text_rect = flag_text.get_rect(center=cell_rect.center)
+                screen.blit(flag_text, text_rect)
+            else:
+                pygame.draw.rect(screen, DARK_GREY, cell_rect)
+            
+            pygame.draw.rect(screen, BLACK, cell_rect, 1)
+    
+    pygame.display.flip()
+
+def play_game_with_ai_visual(width=10, height=10, mines=15, max_turns=200, ai_delay=0.1):
+    game = MinesweeperGame(width, height, mines)
+    ai = MinesweeperAI(game)
+
+    screen_width = (CELL_SIZE + MARGIN) * width + MARGIN
+    screen_height = (CELL_SIZE + MARGIN) * height + MARGIN + INFO_PANEL_HEIGHT
+    screen = pygame.display.set_mode([screen_width, screen_height])
+    pygame.display.set_caption("Mayın Tarlası AI")
+
+    font = pygame.font.Font(None, int(CELL_SIZE * 0.8))
+    game_font_bigger = pygame.font.Font(None, int(CELL_SIZE))
+
+    running = True
+    turn_count = 0
+
+    while running and not game.game_over and turn_count < max_turns:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+        
+        if not game.game_over:
+            ai_move = ai.choose_move()
+
+            if ai_move is None:
+                break 
+            
+            move_type, r, c = ai_move
+
+            if move_type == 'reveal':
+                mine_hit = game.reveal(r, c)
+                if mine_hit:
+                    pass # Oyun bitti mesajı zaten status_text_str içinde
+            elif move_type == 'flag':
+                game.flag(r, c)
+            
+            draw_board(screen, game, font, game_font_bigger)
+            pygame.time.wait(int(ai_delay * 1000))
+            turn_count += 1
+        
+        if game.win:
+            draw_board(screen, game, font, game_font_bigger) 
+            break 
+        if game.game_over and not game.win:
+            draw_board(screen, game, font, game_font_bigger)
+            break
+    
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+        pygame.display.flip()
+
+    pygame.quit()
+
+if __name__ == "__main__":
+    BOARD_WIDTH = 32
+    BOARD_HEIGHT = 32
+    NUM_MINES = 200
+    MAX_AI_TURNS = BOARD_WIDTH * BOARD_HEIGHT
+    AI_MOVE_DELAY = 0.1
+
+    play_game_with_ai_visual(width=BOARD_WIDTH, 
+                             height=BOARD_HEIGHT, 
+                             mines=NUM_MINES, 
+                             max_turns=MAX_AI_TURNS, 
+                             ai_delay=AI_MOVE_DELAY)
