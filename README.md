@@ -29,7 +29,7 @@ pip install pygame
 To start the game:
 
 ```python
-python mayin_Tarlasi.py
+python minesweep.py
 ```
 
 Default settings:
@@ -39,7 +39,7 @@ Default settings:
 
 ## Customization
 
-You can modify the game settings by editing the variables at the end of `mayin_Tarlasi.py`:
+You can modify the game settings by editing the variables at the end of `minesweep.py`:
 
 ```python
 BOARD_WIDTH = 32        # Board width
